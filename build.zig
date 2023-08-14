@@ -30,7 +30,11 @@ pub fn build(builder: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
 
     const docs = builder.addTest(.{ .root_source_file = .{ .path = "src/zubik.zig" } });
-    docs.emit_docs = .emit;
+    const install_docs = builder.addInstallDirectory(.{
+        .source_dir = docs.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
     const docs_step = builder.step("docs", "Generate documentation");
-    docs_step.dependOn(&docs.step);
+    docs_step.dependOn(&install_docs.step);
 }

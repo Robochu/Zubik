@@ -23,6 +23,8 @@ const testing = std.testing;
 const assert = std.debug.assert;
 
 pub const turns_per_face = 3;
+pub const faces_per_axis = 2;
+pub const turns_per_axis = turns_per_face * faces_per_axis;
 pub const edges_per_face = 4;
 pub const corners_per_face = 4;
 
@@ -41,13 +43,15 @@ pub const edge_orientation_count = 2;
 pub const corner_orientation_count = 3;
 
 pub const gods_number = 20;
-// TODO FIXME HACK more useful constants
+pub const valid_state_count = edges_orientation_count * corners_orientation_count * edges_permutation_count *
+    corners_permutation_count / 2;
 // TODO doccomments
 
 // The following enums all have the restriction that they have to start at 0 and go up by 1 so that they can be used for
-// indexing. Turn has an extra restriction that the 18 turns have to be grouped by face in multiples of 3 in order to be
-// able to quickly avoid performing same-face turns twice in a row. The groups must be in the same order as Face.
-// EdgeOrientation and CornerOrientation cannot be changed at all.
+// indexing. Turn has an extra restriction that the 18 turns have to be grouped by face in multiples of 3 and by axis in
+// multiples of 6 in order to be able to quickly avoid performing same-face turns twice in a row and same-axis turns
+// thrice in a row. The groups must be in the same order as Face. EdgeOrientation and CornerOrientation cannot be
+// changed at all.
 pub const Face = enum(u8) { U, D, R, L, F, B };
 pub const Turn = enum(u8) { U, @"U'", U2, D, @"D'", D2, R, @"R'", R2, L, @"L'", L2, F, @"F'", F2, B, @"B'", B2 };
 pub const Edge = enum(u8) { UR, UL, UF, UB, DR, DL, DF, DB, RF, RB, LF, LB };
@@ -108,19 +112,48 @@ test "factorial" {
 
 fn reverse(array: anytype) @TypeOf(array) {
     var array_reversed: @TypeOf(array) = undefined;
-    for (array, 0..) |item, i| {
-        array_reversed[array_reversed.len - 1 - i] = item;
+    var i: u8 = 0;
+    while (i < array.len) : (i += 1) {
+        array_reversed[array_reversed.len - 1 - i] = array[i];
     }
     return array_reversed;
 }
 
 test "reverse" {
-    try testing.expectEqual([_]usize{}, reverse([_]usize{}));
-    try testing.expectEqual([_]usize{1}, reverse([_]usize{1}));
-    try testing.expectEqual([_]usize{ 2, 1 }, reverse([_]usize{ 1, 2 }));
-    try testing.expectEqual([_]usize{ 3, 2, 1 }, reverse([_]usize{ 1, 2, 3 }));
-    try testing.expectEqual([_]usize{ 3, 2, 2, 1 }, reverse([_]usize{ 1, 2, 2, 3 }));
-    try testing.expectEqual([_]usize{ 6, 4, 7, 2, 1 }, reverse([_]usize{ 1, 2, 7, 4, 6 }));
+    try testing.expectEqual([_]u8{}, reverse([_]u8{}));
+    try testing.expectEqual([_]u8{1}, reverse([_]u8{1}));
+    try testing.expectEqual([_]u8{ 2, 1 }, reverse([_]u8{ 1, 2 }));
+    try testing.expectEqual([_]u8{ 3, 2, 1 }, reverse([_]u8{ 1, 2, 3 }));
+    try testing.expectEqual([_]u8{ 3, 2, 2, 1 }, reverse([_]u8{ 1, 2, 2, 3 }));
+    try testing.expectEqual([_]u8{ 6, 4, 7, 2, 1 }, reverse([_]u8{ 1, 2, 7, 4, 6 }));
+}
+
+fn parity(permutation_array: anytype) bool {
+    var parity_count: u8 = 0;
+    var visited = [_]bool{false} ** permutation_array.len;
+    var i: u8 = 0;
+    while (i < permutation_array.len) : (i += 1) {
+        if (!visited[i]) {
+            visited[i] = true;
+            var cycle_len: u8 = 1;
+            var j = permutation_array[i];
+            while (j != i) : (j = permutation_array[j]) {
+                visited[j] = true;
+                cycle_len += 1;
+            }
+            parity_count += (cycle_len - 1) % 2;
+        }
+    }
+    return parity_count % 2 == 1;
+}
+
+test "parity" {
+    try testing.expectEqual(false, parity([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 }));
+    try testing.expectEqual(true, parity([_]u8{ 0, 1, 2, 3, 4, 5, 7, 6 }));
+    try testing.expectEqual(true, parity([_]u8{ 3, 7, 6, 0, 4, 5, 2, 1 }));
+    try testing.expectEqual(false, parity([_]u8{ 2, 1, 5, 3, 4, 0, 6, 7 }));
+    try testing.expectEqual(true, parity([_]u8{ 4, 2, 1, 5, 0, 7, 3, 6 }));
+    try testing.expectEqual(false, parity([_]u8{ 6, 7, 0, 4, 1, 2, 5, 3 }));
 }
 
 // The orientation of the last edge/corner can be determined from all other edges/corners. Therefore it does not need to
@@ -457,7 +490,8 @@ fn initAllTurnTables(allocator: std.mem.Allocator) !void {
 
 /// An arena allocator is recommended. Caching to a file is used to speed up the initialization. Set `cache_sub_path` to
 /// `null` to disable caching. `cache_sub_path` is relative to the executable directory and not the current working
-/// directory. Takes ~35ms to complete without caching and less than 1ms with caching.
+/// directory. Takes ~35ms to complete without caching and less than 1ms with caching. See also `initPartialTables` and
+/// `initInstantTables`.
 pub fn initTurnTables(allocator: std.mem.Allocator, cache_sub_path: ?[]const u8) !void {
     if (cache_sub_path) |sub_path| {
         var exe_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
@@ -742,7 +776,10 @@ fn initAllPartialTables(allocator: std.mem.Allocator) !void {
     }
 }
 
-/// TODO doc
+/// An arena allocator is recommended. Caching to a file is used to speed up the initialization. Set `cache_sub_path` to
+/// `null` to disable caching. `cache_sub_path` is relative to the executable directory and not the current working
+/// directory. Takes ~70s to complete without caching and less than 1s with caching. See also `initTurnTables` and
+/// `initInstantTables`.
 pub fn initPartialTables(allocator: std.mem.Allocator, cache_sub_path: ?[]const u8) !void {
     if (cache_sub_path) |sub_path| {
         var exe_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
@@ -791,94 +828,9 @@ pub fn deinitPartialTables(allocator: std.mem.Allocator) void {
     }
 }
 
-pub const CubeSet = struct {
-    const Cell = struct {
-        cube: Cube,
-        depth: u8,
-    };
-
-    cells: []Cell,
-
-    pub fn init(allocator: std.mem.Allocator, len: usize) !CubeSet {
-        const cube_set = CubeSet{ .cells = try allocator.alloc(Cell, len) };
-        cube_set.clear();
-        return cube_set;
-    }
-
-    pub fn deinit(self: CubeSet, allocator: std.mem.Allocator) void {
-        allocator.free(self.cells);
-    }
-
-    pub fn clear(self: CubeSet) void {
-        for (self.cells) |*cell| {
-            cell.depth = std.math.maxInt(u8);
-        }
-    }
-
-    pub fn contains(self: CubeSet, cube: Cube, depth: u8) bool {
-        const i = ((@as(u32, cube.edges_orientation) << 16) ^
-            (@as(u32, cube.corners_orientation) << 0) ^
-            (@as(u32, cube.edges_permutation[0]) << 16) ^
-            @as(u32, cube.edges_permutation[1]) ^
-            (@as(u32, cube.edges_permutation[2]) << 8) ^
-            (@as(u32, cube.corners_permutation) << 0)) % self.cells.len;
-        const found = std.meta.eql(self.cells[i].cube, cube) and depth >= self.cells[i].depth;
-        self.cells[i] = .{ .cube = cube, .depth = depth };
-        return found;
-    }
-};
-
-// fn solveImpl(
-//     cube: Cube,
-//     cube_set: CubeSet,
-//     curr_depth: u8,
-//     max_depth: u8,
-//     solution: [*]Turn,
-// ) bool {
-//     if (curr_depth == max_depth) {
-//         if (std.meta.eql(cube, solved_cube)) {
-//             return true;
-//         }
-//     } else {
-//         var turn: u8 = 0;
-//         outer: while (turn < turn_count) : (turn += 1) {
-//             if (curr_depth > 0 and turn / turns_per_face == @intFromEnum(solution[curr_depth - 1]) / turns_per_face) {
-//                 continue;
-//             }
-
-//             const new_cube = cube.applyTurn(@enumFromInt(turn));
-//             if (cube_set.contains(new_cube, curr_depth)) {
-//                 continue;
-//             }
-
-//             comptime var i = 0;
-//             inline for (0..total_parts) |j| {
-//                 inline for ((j + 1)..total_parts) |k| {
-//                     const depth_left = max_depth - curr_depth - 1;
-//                     if (depth_left < partial_tables[i].max_depth and
-//                         partial_tables[i].table[
-//                         @as(usize, new_cube.getPart(j)) * turn_table_infos[k].size +
-//                             new_cube.getPart(k)
-//                     ] > depth_left) {
-//                         continue :outer;
-//                     }
-//                     i += 1;
-//                 }
-//             }
-
-//             solution[curr_depth] = @enumFromInt(turn);
-//             if (solveImpl(new_cube, cube_set, curr_depth + 1, max_depth, solution)) {
-//                 return true;
-//             }
-//         }
-//     }
-//     return false;
-// }
-
 // TODO comprehensive when async is reimplemented into zig
-pub fn solveImpl(
+fn solveDepthImpl(
     comptime indices: []const comptime_int,
-    comptime comprehensive: bool,
     turn_set: []const Turn,
     parts: [indices.len]u16,
     curr_depth: u8,
@@ -895,8 +847,17 @@ pub fn solveImpl(
         var turn_index: u8 = 0;
         outer: while (turn_index < turn_set.len) : (turn_index += 1) {
             const turn = if (turn_set.len == turn_count) turn_index else @intFromEnum(turn_set[turn_index]);
-            if (curr_depth > 0 and turn / turns_per_face == @intFromEnum(solution[curr_depth - 1]) / turns_per_face) {
-                continue;
+            if (curr_depth > 0) {
+                if (turn / turns_per_face == @intFromEnum(solution[curr_depth - 1]) / turns_per_face) {
+                    continue;
+                }
+
+                const prev_turn_axis = @intFromEnum(solution[curr_depth - 1]) / turns_per_axis;
+                if (curr_depth > 1 and turn / turns_per_axis == prev_turn_axis and
+                    prev_turn_axis == @intFromEnum(solution[curr_depth - 2]) / turns_per_axis)
+                {
+                    continue;
+                }
             }
 
             var new_parts: [indices.len]u16 = undefined;
@@ -915,7 +876,7 @@ pub fn solveImpl(
             }
 
             solution[curr_depth] = @enumFromInt(turn);
-            if (solveImpl(indices, comprehensive, turn_set, new_parts, curr_depth + 1, max_depth, solution)) {
+            if (solveDepthImpl(indices, turn_set, new_parts, curr_depth + 1, max_depth, solution)) {
                 return true;
             }
         }
@@ -923,12 +884,21 @@ pub fn solveImpl(
     }
 }
 
+fn solveImpl(comptime indices: []const comptime_int, turn_set: []const Turn, parts: [indices.len]u16, solution: [*]Turn) u8 {
+    var depth: u8 = 0;
+    var solved = false;
+    while (!solved) : (depth += 1) {
+        solved = solveDepthImpl(indices, turn_set, parts, 0, depth, solution);
+    }
+    return depth - 1;
+}
+
 pub fn solveDepth(cube: Cube, depth: u8, solution: [*]Turn) bool {
     var parts: [total_parts]u16 = undefined;
     inline for (0..total_parts) |i| {
         parts[i] = cube.getPart(i);
     }
-    return solveImpl(&.{ 0, 1, 2, 3, 4, 5 }, false, std.enums.values(Turn), parts, 0, depth, solution);
+    return solveDepthImpl(&.{ 0, 1, 2, 3, 4, 5 }, std.enums.values(Turn), parts, 0, depth, solution);
 }
 
 pub fn solve(cube: Cube, solution: [*]Turn) u8 {
@@ -940,7 +910,7 @@ pub fn solve(cube: Cube, solution: [*]Turn) u8 {
     return depth - 1;
 }
 
-pub fn qsolve(cube: Cube, solution: [*]Turn) u8 {
+pub fn solveQuick(cube: Cube, solution: [*]Turn) u8 {
     var parts: [total_parts]u16 = undefined;
     inline for (0..total_parts) |i| {
         parts[i] = cube.getPart(i);
@@ -949,7 +919,7 @@ pub fn qsolve(cube: Cube, solution: [*]Turn) u8 {
     var depth1: u8 = 0;
     var solved = false;
     while (!solved) : (depth1 += 1) {
-        solved = solveImpl(&.{0, 1, 4}, false, std.enums.values(Turn), .{ parts[0], parts[1], parts[4] }, 0, depth1, solution);
+        solved = solveDepthImpl(&.{ 0, 1, 4 }, std.enums.values(Turn), .{ parts[0], parts[1], parts[4] }, 0, depth1, solution);
     }
     depth1 -= 1;
 
@@ -962,7 +932,132 @@ pub fn qsolve(cube: Cube, solution: [*]Turn) u8 {
     var depth2: u8 = 0;
     solved = false;
     while (!solved) : (depth2 += 1) {
-        solved = solveImpl(&.{0, 1, 2, 3, 4, 5}, false, &.{.U, .U2, .@"U'", .D, .D2, .@"D'", .R2, .L2, .F2, .B2}, parts, 0, depth2, @ptrCast(&solution[depth1]));
+        solved = solveDepthImpl(&.{ 0, 1, 2, 3, 4, 5 }, &.{ .U, .U2, .@"U'", .D, .D2, .@"D'", .R2, .L2, .F2, .B2 }, parts, 0, depth2, @ptrCast(&solution[depth1]));
     }
     return depth1 + depth2 - 1;
+}
+
+pub var instant_tables: [total_parts][*]const []const Turn = undefined;
+
+fn initInstantTable(comptime index: comptime_int, allocator: std.mem.Allocator) !void {
+    const table = try allocator.alloc([]Turn, turn_table_infos[index].size);
+    var solution: [gods_number]Turn = undefined;
+    var parts: [index + 1]u16 = undefined;
+    comptime var indices: [index + 1]comptime_int = undefined;
+    inline for (0..index) |i| {
+        parts[i] = solved_cube.getPart(i);
+        indices[i] = i;
+    }
+    parts[index] = 0;
+    indices[index] = index;
+
+    outer: while (parts[index] < table.len) : (parts[index] += 1) {
+        std.debug.print("{d}\n", .{parts[index]});
+        // Not all edge orientations are valid which means solveImpl() will never finish. Therefore, when index is 3 or
+        // 4, the placement of the edges needs to be checked to ensure that no 2 edges overlap.
+        if (index == 3 or index == 4) {
+            const permutation_array = arrayFromPermutation(edge_count, parts[index]);
+            var i: u8 = 0;
+            while (i < partial_edge_count) : (i += 1) {
+                if (permutation_array[i] < (index - 2) * partial_edge_count) {
+                    table[parts[index]] = try allocator.alloc(Turn, 0);
+                    continue :outer;
+                }
+            }
+        }
+
+        // Similarly, not all corner permutations are solvable when all the edges are solved. Parity therefore has to be
+        // checked when index is 5.
+        if (index == 5 and parity(arrayFromPermutation(corner_count, parts[index]))) {
+            table[parts[index]] = try allocator.alloc(Turn, 0);
+            continue;
+        }
+
+        // TODO run without shortcuts
+        var depth: u8 = undefined;
+        if (index == 5) {
+            depth = solveQuick(Cube{
+                .edges_orientation = parts[0],
+                .corners_orientation = parts[1],
+                .edges_permutation = .{ parts[2], parts[3], parts[4] },
+                .corners_permutation = parts[5],
+            }, &solution);
+        } else {
+            depth = solveImpl(&indices, std.enums.values(Turn), parts, &solution);
+        }
+        table[parts[index]] = try allocator.alloc(Turn, depth);
+        @memcpy(table[parts[index]], solution[0..depth]);
+    }
+    instant_tables[index] = @ptrCast(table);
+}
+
+fn initAllInstantTables(allocator: std.mem.Allocator) !void {
+    inline for (0..total_parts) |i| {
+        try initInstantTable(i, allocator);
+    }
+}
+
+// TODO times
+/// An arena allocator is highly recommended. Caching to a file is used to speed up the initialization. Set
+/// `cache_sub_path` to `null` to disable caching. `cache_sub_path` is relative to the executable directory and not the
+/// current working directory. Takes ~TODOs to complete without caching and less than TODOs with caching. See also `initTurnTables` and `initPartialTables`.
+pub fn initInstantTables(allocator: std.mem.Allocator, cache_sub_path: ?[]const u8) !void {
+    if (cache_sub_path) |sub_path| {
+        var exe_path_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+        const exe_path = try std.fs.selfExeDirPath(&exe_path_buf);
+        var exe_dir = try std.fs.openDirAbsolute(exe_path, .{});
+        defer exe_dir.close();
+
+        if (exe_dir.openFile(sub_path, .{})) |file| {
+            defer file.close();
+            var i: u8 = 0;
+            while (i < total_parts) : (i += 1) {
+                const table = try allocator.alloc([]Turn, turn_table_infos[i].size);
+                var j: u16 = 0;
+                while (j < turn_table_infos[i].size) : (j += 1) {
+                    var solution: []Turn = undefined;
+                    _ = try file.readAll(@as([*]u8, @ptrCast(&solution.len))[0..@sizeOf(usize)]);
+                    solution = try allocator.alloc(Turn, solution.len);
+                    _ = try file.readAll(@ptrCast(solution));
+                    table[j] = solution;
+                }
+                instant_tables[i] = @ptrCast(table);
+            }
+        } else |_| {
+            try initAllInstantTables(allocator);
+            const file = try exe_dir.createFile(sub_path, .{});
+            defer file.close();
+            var i: u8 = 0;
+            while (i < total_parts) : (i += 1) {
+                var j: u16 = 0;
+                while (j < turn_table_infos[i].size) : (j += 1) {
+                    try file.writeAll(@as([*]const u8, @ptrCast(&instant_tables[i][j].len))[0..@sizeOf(usize)]);
+                    try file.writeAll(@ptrCast(instant_tables[i][j]));
+                }
+            }
+        }
+    } else {
+        try initAllInstantTables(allocator);
+    }
+}
+
+pub fn deinitInstantTables(allocator: std.mem.Allocator) void {
+    var i: u8 = 0;
+    while (i < total_parts) : (i += 1) {
+        defer allocator.free(instant_tables[i][0..turn_table_infos[i].size]);
+        var j: u16 = 0;
+        while (j < turn_table_infos[i].size) : (j += 1) {
+            allocator.free(instant_tables[i][j]);
+        }
+    }
+}
+
+pub fn solveInstant(cube: Cube) [total_parts][]const Turn {
+    var cube_copy = cube;
+    var solution: [total_parts][]const Turn = undefined;
+    inline for (0..total_parts) |i| {
+        solution[i] = instant_tables[i][cube_copy.getPart(i)];
+        cube_copy = cube_copy.applyTurns(solution[i]);
+    }
+    return solution;
 }
