@@ -22,6 +22,92 @@ const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
 
+///////////////////////
+// Utility functions //
+///////////////////////
+
+inline fn factorial(comptime n: comptime_int) comptime_int {
+    comptime assert(n >= 0);
+    return if (n == 0) 1 else n * factorial(n - 1);
+}
+
+test "factorial" {
+    try testing.expectEqual(1, factorial(0));
+    try testing.expectEqual(1, factorial(1));
+    try testing.expectEqual(2, factorial(2));
+    try testing.expectEqual(6, factorial(3));
+    try testing.expectEqual(24, factorial(4));
+    try testing.expectEqual(120, factorial(5));
+}
+
+fn reverse(array: anytype) [array.len]@typeInfo(@typeInfo(@TypeOf(array)).Pointer.child).Array.child {
+    comptime assert(array.len <= std.math.maxInt(u8));
+    var array_reversed: [array.len]@typeInfo(@typeInfo(@TypeOf(array)).Pointer.child).Array.child = undefined;
+    var i: u8 = 0;
+    while (i < array.len) : (i += 1) {
+        array_reversed[array_reversed.len - 1 - i] = array[i];
+    }
+    return array_reversed;
+}
+
+test "reverse" {
+    try testing.expectEqual([_]u8{}, reverse(&[_]u8{}));
+    try testing.expectEqual([_]u8{1}, reverse(&[_]u8{1}));
+    try testing.expectEqual([_]u8{ 2, 1 }, reverse(&[_]u8{ 1, 2 }));
+    try testing.expectEqual([_]u8{ 3, 2, 1 }, reverse(&[_]u8{ 1, 2, 3 }));
+    try testing.expectEqual([_]u8{ 3, 2, 2, 1 }, reverse(&[_]u8{ 1, 2, 2, 3 }));
+    try testing.expectEqual([_]u8{ 6, 4, 7, 2, 1 }, reverse(&[_]u8{ 1, 2, 7, 4, 6 }));
+}
+
+fn countOccurences(array: anytype, item: anytype) usize {
+    var count: usize = 0;
+    for (array) |array_item| {
+        if (array_item == item) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+test "countOccurences" {
+    try testing.expectEqual(@as(usize, 3), countOccurences(&[_]u8{ 2, 3, 3, 4, 5, 3 }, 3));
+    try testing.expectEqual(@as(usize, 4), countOccurences("a  b  c", ' '));
+    try testing.expectEqual(@as(usize, 0), countOccurences("aoeu", 'i'));
+}
+
+fn parity(permutation_array: anytype) bool {
+    comptime assert(permutation_array.len <= std.math.maxInt(u8));
+    var parity_count: u8 = 0;
+    var visited = [_]bool{false} ** permutation_array.len;
+    var i: u8 = 0;
+    while (i < permutation_array.len) : (i += 1) {
+        if (!visited[i]) {
+            visited[i] = true;
+            var cycle_len: u8 = 1;
+            var j = permutation_array[i];
+            while (j != i) : (j = permutation_array[j]) {
+                visited[j] = true;
+                cycle_len += 1;
+            }
+            parity_count += (cycle_len - 1) % 2;
+        }
+    }
+    return parity_count % 2 == 1;
+}
+
+test "parity" {
+    try testing.expectEqual(false, parity([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 }));
+    try testing.expectEqual(true, parity([_]u8{ 0, 1, 2, 3, 4, 5, 7, 6 }));
+    try testing.expectEqual(true, parity([_]u8{ 3, 7, 6, 0, 4, 5, 2, 1 }));
+    try testing.expectEqual(false, parity([_]u8{ 2, 1, 5, 3, 4, 0, 6, 7 }));
+    try testing.expectEqual(true, parity([_]u8{ 4, 2, 1, 5, 0, 7, 3, 6 }));
+    try testing.expectEqual(false, parity([_]u8{ 6, 7, 0, 4, 1, 2, 5, 3 }));
+}
+
+///////////////
+// Constants //
+///////////////
+
 pub const turns_per_face = 3;
 pub const faces_per_axis = 2;
 pub const turns_per_axis = turns_per_face * faces_per_axis;
@@ -46,6 +132,10 @@ pub const gods_number = 20;
 pub const valid_state_count = edges_orientation_count * corners_orientation_count * edges_permutation_count *
     corners_permutation_count / 2;
 // TODO doccomments
+
+/////////////////////
+// Data structures //
+/////////////////////
 
 // The following enums all have the restriction that they have to start at 0 and go up by 1 so that they can be used for
 // indexing. Turn has an extra restriction that the 18 turns have to be grouped by face in multiples of 3 and by axis in
@@ -95,66 +185,159 @@ pub const turn_map = blk: {
     break :blk std.ComptimeStringMap(Turn, kvs_list);
 };
 
-// TODO string to turns and back
+//
+// TODO
+//
 
-fn factorial(comptime n: comptime_int) comptime_int {
-    return if (n == 0) 1 else n * factorial(n - 1);
-}
-
-test "factorial" {
-    try testing.expectEqual(1, factorial(0));
-    try testing.expectEqual(1, factorial(1));
-    try testing.expectEqual(2, factorial(2));
-    try testing.expectEqual(6, factorial(3));
-    try testing.expectEqual(24, factorial(4));
-    try testing.expectEqual(120, factorial(5));
-}
-
-fn reverse(array: anytype) @TypeOf(array) {
-    var array_reversed: @TypeOf(array) = undefined;
-    var i: u8 = 0;
-    while (i < array.len) : (i += 1) {
-        array_reversed[array_reversed.len - 1 - i] = array[i];
+/// Convert a string of turns like "R U R' U' R' F R2 U' R' U' R U R' F'" into an array of turns. Returns a subslice of
+/// `turns` on success, `error.InvalidTurnString` if the string contains an invalid turn, and `error.OutOfBounds` if
+/// `turns` isn't long enough to hold all of the turns. A safe length for `turns` is `turn_string.len / 2 + 1`. See also
+/// `allocTurnsFromString`, `stringFromTurn`, `allocStringFromTurn`, and `Cube.applyTurnString`.
+pub fn turnsFromString(turn_string: []const u8, turns: []Turn) ![]Turn {
+    if (turn_string.len == 0) {
+        return turns[0..0];
     }
-    return array_reversed;
-}
-
-test "reverse" {
-    try testing.expectEqual([_]u8{}, reverse([_]u8{}));
-    try testing.expectEqual([_]u8{1}, reverse([_]u8{1}));
-    try testing.expectEqual([_]u8{ 2, 1 }, reverse([_]u8{ 1, 2 }));
-    try testing.expectEqual([_]u8{ 3, 2, 1 }, reverse([_]u8{ 1, 2, 3 }));
-    try testing.expectEqual([_]u8{ 3, 2, 2, 1 }, reverse([_]u8{ 1, 2, 2, 3 }));
-    try testing.expectEqual([_]u8{ 6, 4, 7, 2, 1 }, reverse([_]u8{ 1, 2, 7, 4, 6 }));
-}
-
-fn parity(permutation_array: anytype) bool {
-    var parity_count: u8 = 0;
-    var visited = [_]bool{false} ** permutation_array.len;
-    var i: u8 = 0;
-    while (i < permutation_array.len) : (i += 1) {
-        if (!visited[i]) {
-            visited[i] = true;
-            var cycle_len: u8 = 1;
-            var j = permutation_array[i];
-            while (j != i) : (j = permutation_array[j]) {
-                visited[j] = true;
-                cycle_len += 1;
-            }
-            parity_count += (cycle_len - 1) % 2;
+    
+    var i: usize = 0;
+    var it = std.mem.splitScalar(u8, turn_string, ' ');
+    while (it.next()) |turn_name| {
+        if (i == turns.len) {
+            return error.OutOfBounds;
+        } else if (turn_map.get(turn_name)) |turn| {
+            turns[i] = turn;
+            i += 1;
+        } else {
+            return error.InvalidTurnString;
         }
     }
-    return parity_count % 2 == 1;
+    return turns[0..i];
 }
 
-test "parity" {
-    try testing.expectEqual(false, parity([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 }));
-    try testing.expectEqual(true, parity([_]u8{ 0, 1, 2, 3, 4, 5, 7, 6 }));
-    try testing.expectEqual(true, parity([_]u8{ 3, 7, 6, 0, 4, 5, 2, 1 }));
-    try testing.expectEqual(false, parity([_]u8{ 2, 1, 5, 3, 4, 0, 6, 7 }));
-    try testing.expectEqual(true, parity([_]u8{ 4, 2, 1, 5, 0, 7, 3, 6 }));
-    try testing.expectEqual(false, parity([_]u8{ 6, 7, 0, 4, 1, 2, 5, 3 }));
+test "turnsFromString" {
+    var turns: [5]Turn = undefined;
+    try testing.expectEqualSlices(Turn, &.{}, try turnsFromString("", &turns));
+    try testing.expectEqualSlices(Turn, &.{ .R, .U, .@"R'", .@"U'" }, try turnsFromString("R U R' U'", &turns));
+    try testing.expectEqualSlices(Turn, &.{ .L2, .R2, .D2, .R2, .L2 }, try turnsFromString("L2 R2 D2 R2 L2", &turns));
+    try testing.expectError(error.InvalidTurnString, turnsFromString("F R U I T", &turns));
+    try testing.expectError(error.OutOfBounds, turnsFromString("B' D F2 D2 F' D'", &turns));
 }
+
+/// Same as `turnsFromString`, but with the allocation done for you. The returned slice has to be freed.
+pub fn allocTurnsFromString(allocator: std.mem.Allocator, turn_string: []const u8) ![]Turn {
+    if (turn_string.len == 0) {
+        return &.{};
+    }
+
+    const turns = try allocator.alloc(Turn, countOccurences(turn_string, ' ') + 1);
+    const turns_copy = turnsFromString(turn_string, turns) catch |err| {
+        assert(err != error.OutOfBounds);
+        allocator.free(turns);
+        return err;
+    };
+    assert(turns_copy.ptr == turns.ptr and turns_copy.len == turns.len);
+    return turns;
+}
+
+test "allocTurnsFromString" {
+    const expected = .{
+        .{},
+        .{ .R, .U, .B },
+        .{ .F, .U, .R },
+    };
+
+    const actual = .{
+        try allocTurnsFromString(testing.allocator, ""),
+        try allocTurnsFromString(testing.allocator, "R U B"),
+        try allocTurnsFromString(testing.allocator, "F U R"),
+    };
+    defer inline for (actual) |turns| {
+        testing.allocator.free(turns);
+    };
+
+    inline for (expected, actual) |expected_turns, actual_turns| {
+        try testing.expectEqualSlices(Turn, &expected_turns, actual_turns);
+    }
+    try testing.expectError(error.InvalidTurnString, allocTurnsFromString(testing.allocator, "R Y"));
+}
+
+/// Convert a slice of turns into a readable string. Returns a subslice of `turn_string` on success and
+/// `error.OutOfBounds` if `turn_string` isn't long enough. A safe length for `turn_string` is `turns.len * 3 - 1`. See
+/// also `allocStringFromTurns`, `turnsFromString`, and `allocTurnsFromString`.
+pub fn stringFromTurns(turns: []const Turn, turn_string: []u8) ![]u8 {
+    var i: usize = 0;
+    for (turns, 0..) |turn, j| {
+        const turn_name = turn_names[@intFromEnum(turn)];
+        if (turn_string.len < i + turn_name.len) {
+            return error.OutOfBounds;
+        }
+        @memcpy(turn_string[i..(i + turn_name.len)], turn_name);
+        i += turn_name.len;
+        if (j < turns.len - 1) {
+            if (turn_string.len <= i) {
+                return error.OutOfBounds;
+            }
+            turn_string[i] = ' ';
+            i += 1;
+        }
+    }
+    return turn_string[0..i];
+}
+
+test "stringFromTurns" {
+    var buffer: [10]u8 = undefined;
+    var turns: [5]Turn = undefined;
+    try testing.expectEqualStrings("", try stringFromTurns(&.{}, &buffer));
+    try testing.expectEqualStrings("D'", try stringFromTurns(&.{.@"D'"}, &buffer));
+    try testing.expectEqualStrings("F' U' B2", try stringFromTurns(&.{ .@"F'", .@"U'", .B2 }, &buffer));
+    try testing.expectEqualStrings("L' B D' R2", try stringFromTurns(&.{ .@"L'", .B, .@"D'", .R2 }, &buffer));
+    try testing.expectEqualStrings("R U R' U'", try stringFromTurns(try turnsFromString("R U R' U'", &turns), &buffer));
+    try testing.expectEqualStrings("R2 L2 U2", try stringFromTurns(try turnsFromString("R2 L2 U2", &turns), &buffer));
+    try testing.expectError(error.OutOfBounds, stringFromTurns(&.{ .U2, .U2, .U2, .U2 }, &buffer));
+    try testing.expectError(error.OutOfBounds, stringFromTurns(&.{ .U2, .U2, .U2, .U, .U }, &buffer));
+}
+
+/// Same as `stringFromTurns`, but with the allocation done for you. The returned string has to be freed.
+pub fn allocStringFromTurns(allocator: std.mem.Allocator, turns: []const Turn) ![]u8 {
+    var len: usize = 0;
+    for (turns) |turn| {
+        len += turn_names[@intFromEnum(turn)].len;
+    }
+    len += @max(0, @as(i64, @intCast(turns.len)) - 1);
+
+    const turn_string = try allocator.alloc(u8, len);
+    const turn_string_copy = stringFromTurns(turns, turn_string) catch unreachable;
+    assert(turn_string_copy.ptr == turn_string.ptr and turn_string_copy.len == turn_string.len);
+    return turn_string;
+}
+
+test "allocStringFromTurns" {
+    const expected = .{
+        "",
+        "R U R U",
+        "L2 U L'",
+        "B",
+    };
+
+    const actual = .{
+        try allocStringFromTurns(testing.allocator, &.{}),
+        try allocStringFromTurns(testing.allocator, &.{ .R, .U, .R, .U }),
+        try allocStringFromTurns(testing.allocator, &.{ .L2, .U, .@"L'" }),
+        try allocStringFromTurns(testing.allocator, &.{.B}),
+    };
+    defer inline for (actual) |turn_string| {
+        testing.allocator.free(turn_string);
+    };
+
+    inline for (expected, actual) |expected_turn_string, actual_turn_string| {
+        try testing.expectEqualStrings(expected_turn_string, actual_turn_string);
+    }
+}
+
+// TODO helper functions and assertions everywhere, as well as more tests
+
+///////////////////////////
+// Turn table generation //
+///////////////////////////
 
 // The orientation of the last edge/corner can be determined from all other edges/corners. Therefore it does not need to
 // be stored to fully represent a Rubik's cube, which is why 1 is subtracted away from edge/corner count. This reduces
@@ -162,7 +345,6 @@ test "parity" {
 // is pretty minimal and only affects turn table generation, so this is a trade-off definitely worth taking.
 // Furthermore, this simplifies the process of generating a random Rubik's cube since there are no longer invalid
 // orientations in the range 0..(edges/corners)_orientation_count.
-// HACK std.math.pow() is not implemented for comptime_int for some reason.
 pub const edges_orientation_count: comptime_int = std.math.pow(u16, edge_orientation_count, edge_count - 1);
 pub const corners_orientation_count: comptime_int = std.math.pow(u16, corner_orientation_count, corner_count - 1);
 
@@ -278,7 +460,7 @@ fn initEdgesOrientationTurnTable(allocator: std.mem.Allocator) !void {
                 .@"U'", .@"D'", .@"R'", .@"L'" => rotatePiecesOrientation(
                     edge_orientation_count,
                     full_orientation,
-                    reverse(edges),
+                    reverse(&edges),
                 ),
                 .U2, .D2, .R2, .L2, .F2, .B2 => rotatePiecesOrientation(
                     edge_orientation_count,
@@ -298,7 +480,7 @@ fn initEdgesOrientationTurnTable(allocator: std.mem.Allocator) !void {
                 .@"F'", .@"B'" => offsetAndRotatePiecesOrientation(
                     edge_orientation_count,
                     full_orientation,
-                    reverse(edges),
+                    reverse(&edges),
                     ([_]EdgeOrientation{.flipped} ** edges_per_face),
                 ),
             } % edges_orientation_count;
@@ -325,7 +507,7 @@ fn initCornersOrientationTurnTable(allocator: std.mem.Allocator) !void {
                 .@"U'", .@"D'" => rotatePiecesOrientation(
                     corner_orientation_count,
                     full_orientation,
-                    reverse(corners),
+                    reverse(&corners),
                 ),
                 .U2, .D2, .R2, .L2, .F2, .B2 => rotatePiecesOrientation(
                     corner_orientation_count,
@@ -345,7 +527,7 @@ fn initCornersOrientationTurnTable(allocator: std.mem.Allocator) !void {
                 .@"R'", .@"L'", .@"F'", .@"B'" => offsetAndRotatePiecesOrientation(
                     corner_orientation_count,
                     full_orientation,
-                    reverse(corners),
+                    reverse(&corners),
                     ([_]CornerOrientation{ .counterclockwise, .clockwise } ** 2),
                 ),
             } % corners_orientation_count;
@@ -441,7 +623,7 @@ fn initEdgesPermutationTurnTable(allocator: std.mem.Allocator) !void {
                 ),
                 .@"U'", .@"D'", .@"R'", .@"L'", .@"F'", .@"B'" => rotatePiecesPermutation(
                     permutation_array,
-                    reverse(edges),
+                    reverse(&edges),
                 ),
                 .U2, .D2, .R2, .L2, .F2, .B2 => rotatePiecesPermutation(
                     rotatePiecesPermutation(permutation_array, [_]Edge{ edges[0], edges[2] }),
@@ -469,7 +651,7 @@ fn initCornersPermutationTurnTable(allocator: std.mem.Allocator) !void {
                 ),
                 .@"U'", .@"D'", .@"R'", .@"L'", .@"F'", .@"B'" => rotatePiecesPermutation(
                     permutation_array,
-                    reverse(corners),
+                    reverse(&corners),
                 ),
                 .U2, .D2, .R2, .L2, .F2, .B2 => rotatePiecesPermutation(
                     rotatePiecesPermutation(permutation_array, [_]Corner{ corners[0], corners[2] }),
@@ -552,6 +734,10 @@ pub fn deinitTurnTables(allocator: std.mem.Allocator) void {
     allocator.free(corners_permutation_turn_table);
 }
 
+//
+// TODO
+//
+
 pub const Cube = struct {
     edges_orientation: u16,
     corners_orientation: u16,
@@ -628,7 +814,7 @@ pub const Cube = struct {
         return new_self;
     }
 
-    // TODO faster than string to turn doccomment
+    /// Same as `Cube.applyTurns(turnsFromString(turn_string))`, but without using any additional memory.
     pub fn applyTurnString(self: Cube, turn_string: []const u8) !Cube {
         var new_self = self;
         var it = std.mem.splitScalar(u8, turn_string, ' ');
@@ -718,6 +904,10 @@ test "Turn table caching" {
     try testing.expectEqualSlices(u16, edges_permutation_turn_table_copy, edges_permutation_turn_table);
     try testing.expectEqualSlices(u16, corners_permutation_turn_table_copy, corners_permutation_turn_table);
 }
+
+/////////////
+// Solving //
+/////////////
 
 pub const PartialTable = struct {
     table: [*]const u8,
